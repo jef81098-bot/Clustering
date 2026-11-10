@@ -56,3 +56,9 @@ https://www.cdc.gov/nchs/nhanes/
 ## Repository
 
 GitHub: https://github.com/jef81098-bot/Clustering
+
+---
+
+## AI 使用聲明
+
+本 README 文件由 AI 協助生成，內容經專案使用者確認與整理。
