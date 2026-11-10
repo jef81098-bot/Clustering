@@ -1,0 +1,731 @@
+---
+title: "Exploratory Analysis of Dietary Habits Among Adolescents Using Cluster Analysis"
+author: "Wang Ching-Cheng"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 3
+    number_sections: true
+geometry:
+  - top=2cm
+  - bottom=2cm
+  - left=1.8cm
+  - right=1.8cm
+fontsize: 10pt
+documentclass: article
+header-includes:
+  - \usepackage{graphicx}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{float}
+---
+
+# Introduction
+
+Adolescence is an important stage of growth and development, during which adequate nutrition plays an essential role in maintaining health. Dietary habits established during this period may also influence health outcomes later in life.
+
+The purpose of this study is to explore dietary habits among adolescents aged 12–18 years in the United States using data from the National Health and Nutrition Examination Survey (NHANES) 2021–2023.
+
+Cluster analysis is applied to identify potential dietary patterns based on nutrient intake. By grouping individuals with similar nutritional characteristics, this study aims to describe distinct dietary profiles and explore differences in nutrient consumption across identified clusters.
+
+# Data Source and Study Population
+
+## Data Source
+
+The data were obtained from the NHANES August 2021–August 2023 cycle.
+
+The following datasets were used:
+
+- **DR1TOT_L:** Dietary Interview – Total Nutrient Intakes, First Day.
+- **DEMO_L:** Demographic Variables and Sample Weights.
+
+The two datasets were merged using the participant identification number (`SEQN`).
+
+Official data sources:
+
+- [NHANES Dietary Data – DR1TOT_L](https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/2021/DataFiles/DR1TOT_L.htm)
+- [NHANES Demographic Data – DEMO_L](https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/2021/DataFiles/DEMO_L.htm)
+
+## Study Population
+
+Participants aged 12–18 years were included in the analysis.
+
+Only participants with reliable Day 1 dietary recall information (`DR1DRSTZ = 1`) were retained.
+
+The initial merged dataset contained 8,860 participants. After applying the age and dietary recall criteria, 670 adolescents remained.
+
+One additional participant was excluded because of missing values in the selected nutrient variables.
+
+Therefore, the final clustering analysis included **669 participants**.
+
+# Data Cleaning and Preprocessing
+
+## Required Packages
+
+```{r setup, message=FALSE, warning=FALSE}
+required_packages <- c("haven", "cluster", "knitr")
+
+new_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+library(haven)
+library(cluster)
+library(knitr)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5,
+  out.width = "0.90\\linewidth",
+  fig_crop = FALSE
+)
+```
+
+## File Paths and Automatic Download
+
+The original dietary dataset was downloaded and stored locally.
+
+The demographic dataset is also required to obtain participants' ages. If `DEMO_L.xpt` is not found in the working directory, the program automatically downloads it from the official NHANES website.
+
+```{r file-paths}
+data_dir <- "C:/Users/jef81/Desktop/Health_Big_Data/Cluster"
+
+diet_file <- file.path(data_dir, "DR1TOT_L.xpt")
+demo_file <- file.path(data_dir, "DEMO_L.xpt")
+
+output_dir <- file.path(data_dir, "output")
+
+if (!dir.exists(data_dir)) {
+  stop("Data directory does not exist.")
+}
+
+if (!file.exists(diet_file)) {
+  stop("DR1TOT_L.xpt was not found.")
+}
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Automatically download DEMO_L.xpt if unavailable
+if (!file.exists(demo_file)) {
+
+  demo_url <- paste0(
+    "https://wwwn.cdc.gov/Nchs/Data/Nhanes/",
+    "Public/2021/DataFiles/DEMO_L.xpt"
+  )
+
+  download.file(
+    demo_url,
+    demo_file,
+    mode = "wb"
+  )
+}
+
+if (!file.exists(demo_file)) {
+  stop("Unable to obtain DEMO_L.xpt.")
+}
+```
+
+## Import and Merge Data
+
+```{r import-data}
+diet <- read_xpt(diet_file)
+demo <- read_xpt(demo_file)
+
+dat <- merge(
+  diet,
+  demo[, c("SEQN", "RIDAGEYR")],
+  by = "SEQN",
+  all = FALSE
+)
+
+# Select adolescents aged 12-18
+dat <- dat[
+  !is.na(dat$RIDAGEYR) &
+    dat$RIDAGEYR >= 12 &
+    dat$RIDAGEYR <= 18 &
+    dat$DR1DRSTZ == 1,
+]
+
+cat("Number of eligible participants:", nrow(dat))
+```
+
+## Nutrient Variables
+
+The following 18 variables were selected for clustering:
+
+| Nutrient | NHANES Variable |
+|---|---|
+| Energy | DR1TKCAL |
+| Protein | DR1TPROT |
+| Carbohydrate | DR1TCARB |
+| Total sugars | DR1TSUGR |
+| Dietary fiber | DR1TFIBE |
+| Total fat | DR1TTFAT |
+| Cholesterol | DR1TCHOL |
+| Vitamin E | DR1TATOC |
+| Vitamin A | DR1TVARA |
+| Thiamin (B1) | DR1TVB1 |
+| Riboflavin (B2) | DR1TVB2 |
+| Vitamin B6 | DR1TVB6 |
+| Vitamin B12 | DR1TVB12 |
+| Vitamin C | DR1TVC |
+| Vitamin D | DR1TVD |
+| Caffeine | DR1TCAFF |
+| Alcohol | DR1TALCO |
+| Plain water | DR1_320Z |
+
+```{r nutrient-selection}
+nutrient_vars <- c(
+  "DR1TKCAL", "DR1TPROT", "DR1TCARB",
+  "DR1TSUGR", "DR1TFIBE", "DR1TTFAT",
+  "DR1TCHOL", "DR1TATOC", "DR1TVARA",
+  "DR1TVB1", "DR1TVB2", "DR1TVB6",
+  "DR1TVB12", "DR1TVC", "DR1TVD",
+  "DR1TCAFF", "DR1TALCO", "DR1_320Z"
+)
+
+# Convert labelled variables to numeric
+for (v in nutrient_vars) {
+  dat[[v]] <- as.numeric(dat[[v]])
+}
+
+# Treat negative values as missing
+for (v in nutrient_vars) {
+  dat[[v]][!is.na(dat[[v]]) & dat[[v]] < 0] <- NA
+}
+
+# Retain complete cases
+complete_rows <- complete.cases(dat[, nutrient_vars])
+
+analysis_dat <- dat[complete_rows, ]
+
+cat("Final sample size:", nrow(analysis_dat))
+```
+
+## Data Standardization
+
+Nutrient variables have different measurement units and scales. Directly applying Euclidean distance to the original variables may cause variables with larger numerical values to dominate the clustering results.
+
+To address this issue, nutrient density was calculated as the amount of each nutrient consumed per 1,000 kcal.
+
+Total energy intake was retained as an additional variable.
+
+A logarithmic transformation using `log1p()` was applied to reduce right-skewness, followed by Z-score standardization.
+
+```{r standardization}
+energy <- analysis_dat$DR1TKCAL
+
+# Exclude participants with non-positive energy intake
+keep <- energy > 0
+
+analysis_dat <- analysis_dat[keep, ]
+energy <- analysis_dat$DR1TKCAL
+
+density_vars <- setdiff(nutrient_vars, "DR1TKCAL")
+
+# Nutrient intake per 1,000 kcal
+x_density <- as.data.frame(
+  lapply(
+    density_vars,
+    function(v) {
+      analysis_dat[[v]] / energy * 1000
+    }
+  )
+)
+
+names(x_density) <- density_vars
+
+# Combine log-transformed energy and nutrient density
+x_main <- cbind(
+  Energy_kcal = log1p(energy),
+  as.data.frame(lapply(x_density, log1p))
+)
+
+# Z-score standardization
+x_main <- as.data.frame(scale(x_main))
+
+x_main <- as.matrix(x_main)
+
+# Remove zero-variance variables if present
+nonzero_sd <- apply(
+  x_main,
+  2,
+  function(z) sd(z, na.rm = TRUE) > 0
+)
+
+x_main <- x_main[, nonzero_sd, drop = FALSE]
+
+dim(x_main)
+```
+
+# Clustering Methods
+
+## Elbow Method
+
+The Elbow Method was used to examine the relationship between the number of clusters and the total within-cluster sum of squares (WSS).
+
+As the number of clusters increases, WSS generally decreases. The optimal number of clusters may be suggested by the point where the reduction in WSS begins to slow down.
+
+```{r elbow-method}
+set.seed(2026)
+
+k_candidates <- 2:8
+
+wss <- sapply(
+  k_candidates,
+  function(k) {
+    kmeans(
+      x_main,
+      centers = k,
+      nstart = 30,
+      iter.max = 100
+    )$tot.withinss
+  }
+)
+
+plot(
+  k_candidates,
+  wss,
+  type = "b",
+  pch = 19,
+  xlab = "Number of clusters (k)",
+  ylab = "Total within-cluster sum of squares",
+  main = "Elbow Method"
+)
+
+```
+
+## Silhouette Statistic
+
+The Silhouette Statistic evaluates how well each observation fits within its assigned cluster compared with other clusters.
+
+A higher average silhouette width indicates better-defined clusters.
+
+```{r silhouette}
+sil_width <- sapply(
+  k_candidates,
+  function(k) {
+
+    km <- kmeans(
+      x_main,
+      centers = k,
+      nstart = 30,
+      iter.max = 100
+    )
+
+    sil <- silhouette(
+      km$cluster,
+      dist(x_main)
+    )
+
+    mean(sil[, "sil_width"])
+  }
+)
+
+silhouette_results <- data.frame(
+  k = k_candidates,
+  average_silhouette = sil_width
+)
+
+kable(
+  silhouette_results,
+  digits = 4,
+  caption = "Average Silhouette Width for Different Numbers of Clusters"
+)
+
+plot(
+  k_candidates,
+  sil_width,
+  type = "b",
+  pch = 19,
+  xlab = "Number of clusters (k)",
+  ylab = "Average silhouette width",
+  main = "Silhouette Statistic"
+)
+
+```
+
+## Gap Statistic
+
+The Gap Statistic compares the observed within-cluster dispersion with the expected dispersion under a reference distribution.
+
+A larger Gap value suggests stronger clustering structure.
+
+```{r gap-statistic}
+set.seed(2026)
+
+gap <- clusGap(
+  x_main,
+
+  FUN = function(x, k) {
+
+    list(
+      cluster = kmeans(
+        x,
+        centers = k,
+        nstart = 20,
+        iter.max = 100
+      )$cluster
+    )
+
+  },
+
+  K.max = 8,
+  B = 50
+)
+
+plot(
+  gap,
+  main = "Gap Statistic"
+)
+
+gap_table <- as.data.frame(gap$Tab)
+
+gap_table$k <- as.integer(
+  rownames(gap_table)
+)
+
+kable(
+  gap_table,
+  digits = 4,
+  caption = "Gap Statistic Results"
+)
+```
+
+## K-means Clustering
+
+Based on the Silhouette Statistic, K = 2 was selected because it produced the highest average silhouette width among the evaluated solutions.
+
+K-means clustering was then performed using 100 random initializations to improve the stability of the final solution.
+
+```{r kmeans}
+selected_k <- k_candidates[
+  which.max(sil_width)
+]
+
+set.seed(2026)
+
+km_final <- kmeans(
+  x_main,
+  centers = selected_k,
+  nstart = 100,
+  iter.max = 200
+)
+
+analysis_dat$cluster <- factor(
+  km_final$cluster
+)
+
+cat("Selected number of clusters:", selected_k)
+```
+
+## Hierarchical Clustering
+
+Hierarchical clustering was also performed using Euclidean distance and complete linkage.
+
+To make the dendrogram easier to display and reduce computational demands, a random sample of 500 participants was selected.
+
+```{r hierarchical}
+set.seed(2026)
+
+hc_n <- min(
+  nrow(x_main),
+  500
+)
+
+hc_index <- sample(
+  seq_len(nrow(x_main)),
+  hc_n
+)
+
+hc_data <- x_main[
+  hc_index,
+  ,
+  drop = FALSE
+]
+
+hc_dist <- dist(
+  hc_data,
+  method = "euclidean"
+)
+
+hc <- hclust(
+  hc_dist,
+  method = "complete"
+)
+
+plot(
+  hc,
+  labels = FALSE,
+  hang = -1,
+  main = "Hierarchical Clustering Dendrogram",
+  xlab = "Adolescent participants",
+  ylab = "Euclidean distance"
+)
+
+rect.hclust(
+  hc,
+  k = selected_k,
+  border = 2:(selected_k + 1)
+)
+```
+
+# Results
+
+## Sample Characteristics
+
+After merging the dietary and demographic datasets, 670 adolescents aged 12–18 years with reliable Day 1 dietary recalls were identified.
+
+After excluding one participant with incomplete nutrient information, 669 participants were included in the final clustering analysis.
+
+The mean age was approximately 15 years.
+
+```{r sample-characteristics}
+sample_summary <- data.frame(
+  N = nrow(dat),
+  Mean_age = mean(dat$RIDAGEYR, na.rm = TRUE),
+  SD_age = sd(dat$RIDAGEYR, na.rm = TRUE),
+  Age_min = min(dat$RIDAGEYR, na.rm = TRUE),
+  Age_max = max(dat$RIDAGEYR, na.rm = TRUE)
+)
+
+kable(
+  sample_summary,
+  digits = 2,
+  caption = "Characteristics of the Study Population"
+)
+```
+
+## Determination of the Number of Clusters
+
+The Elbow Method showed a gradual decrease in within-cluster sum of squares as the number of clusters increased. However, no clearly defined elbow point was observed.
+
+The Silhouette Statistic suggested that K = 2 was the best solution among the evaluated cluster numbers.
+
+| Number of clusters | Average silhouette width |
+|---|---:|
+| 2 | 0.1163 |
+| 3 | 0.0990 |
+| 4 | 0.0895 |
+| 5 | 0.1052 |
+| 6 | 0.0698 |
+| 7 | 0.0930 |
+| 8 | 0.0938 |
+
+The Gap Statistic showed its highest value at K = 1 (1.0387), followed by K = 2 (0.9872).
+
+This suggests that the dataset may not contain strongly separated natural clusters.
+
+Despite this limitation, K = 2 was retained for exploratory interpretation because it provided the highest average silhouette width among the tested K-means solutions.
+
+## Cluster Distribution
+
+The final K-means analysis identified two clusters among the 669 adolescents.
+
+```{r cluster-distribution}
+cluster_sizes <- as.data.frame(
+  table(analysis_dat$cluster)
+)
+
+names(cluster_sizes) <- c(
+  "Cluster",
+  "N"
+)
+
+cluster_sizes$Percent <- round(
+  cluster_sizes$N / sum(cluster_sizes$N) * 100,
+  1
+)
+
+kable(
+  cluster_sizes,
+  caption = "Distribution of Participants Across Clusters"
+)
+```
+
+The distribution was relatively balanced:
+
+- Cluster 1: 363 participants (54.3%).
+- Cluster 2: 306 participants (45.7%).
+
+## Nutritional Profiles of the Identified Clusters
+
+The mean nutrient intakes of each cluster were calculated using the original nutrient measurements.
+
+```{r cluster-profiles}
+profile_mean <- aggregate(
+  analysis_dat[, nutrient_vars],
+  by = list(
+    Cluster = analysis_dat$cluster
+  ),
+  FUN = function(z) mean(z, na.rm = TRUE)
+)
+
+profile_median <- aggregate(
+  analysis_dat[, nutrient_vars],
+  by = list(
+    Cluster = analysis_dat$cluster
+  ),
+  FUN = function(z) median(z, na.rm = TRUE)
+)
+
+names(profile_mean)[-1] <- c(
+  "Energy_kcal",
+  "Protein_g",
+  "Carbohydrate_g",
+  "Total_sugars_g",
+  "Dietary_fiber_g",
+  "Total_fat_g",
+  "Cholesterol_mg",
+  "Vitamin_E_mg",
+  "Vitamin_A_RAE_mcg",
+  "Thiamin_B1_mg",
+  "Riboflavin_B2_mg",
+  "Vitamin_B6_mg",
+  "Vitamin_B12_mcg",
+  "Vitamin_C_mg",
+  "Vitamin_D_mcg",
+  "Caffeine_mg",
+  "Alcohol_g",
+  "Plain_water_g"
+)
+
+# Transpose the nutrient profile table
+profile_transposed <- data.frame(
+  Nutrient = names(profile_mean)[-1],
+  Cluster_1 = as.numeric(profile_mean[1, -1]),
+  Cluster_2 = as.numeric(profile_mean[2, -1])
+)
+
+# Display the table
+knitr::kable(
+  profile_transposed,
+  format = "latex",
+  booktabs = TRUE,
+  digits = 2,
+  caption = "Mean Daily Nutrient Intake by Cluster",
+  col.names = c(
+    "Nutrient",
+    "Cluster 1",
+    "Cluster 2"
+  ),
+  align = c("l", "r", "r")
+)
+```
+
+### Cluster 1: Protein and Micronutrient-Rich Dietary Pattern
+
+Cluster 1 included 363 participants (54.3%).
+
+Compared with Cluster 2, this group showed:
+
+- Higher protein intake (86.10 g).
+- Higher total fat intake (87.79 g).
+- Higher cholesterol intake (349.77 mg).
+- Higher intake of several micronutrients, including vitamins A, B1, B2, B6, B12, and D.
+- Lower total sugar intake (96.36 g).
+- Higher plain water intake (1320.63 g).
+
+This cluster can be described as a **Protein and Micronutrient-Rich Dietary Pattern**.
+
+However, the relatively high fat and cholesterol intake suggests that this pattern should not automatically be considered healthier.
+
+### Cluster 2: Carbohydrate and Sugar-Heavy Dietary Pattern
+
+Cluster 2 included 306 participants (45.7%).
+
+Compared with Cluster 1, this group showed:
+
+- Higher carbohydrate intake (263.27 g).
+- Higher total sugar intake (119.50 g).
+- Lower protein intake (52.84 g).
+- Lower intake of several micronutrients.
+- Higher caffeine intake (35.53 mg).
+- Lower plain water intake (992.02 g).
+
+This cluster can be described as a **Carbohydrate and Sugar-Heavy Dietary Pattern**.
+
+The results indicate differences in nutrient composition between the two groups. However, the specific food sources responsible for these differences cannot be determined from total nutrient intake data alone.
+
+## Visualization of Cluster Profiles
+
+The standardized cluster centers were calculated to compare the relative nutrient characteristics of the two clusters.
+
+```{r cluster-centers}
+centers <- aggregate(
+  as.data.frame(x_main),
+  by = list(
+    Cluster = analysis_dat$cluster
+  ),
+  FUN = mean
+)
+
+center_matrix <- as.matrix(
+  centers[, -1, drop = FALSE]
+)
+
+rownames(center_matrix) <- paste(
+  "Cluster",
+  centers$Cluster
+)
+
+par(
+  mar = c(10, 8, 4, 2)
+)
+
+image(
+  x = seq_len(ncol(center_matrix)),
+  y = seq_len(nrow(center_matrix)),
+  z = t(
+    center_matrix[
+      nrow(center_matrix):1,
+      ,
+      drop = FALSE
+    ]
+  ),
+  axes = FALSE,
+  xlab = "",
+  ylab = "",
+  main = "Cluster Profiles: Standardized Feature Means"
+)
+
+axis(
+  1,
+  at = seq_len(ncol(center_matrix)),
+  labels = colnames(center_matrix),
+  las = 2,
+  cex.axis = 0.7
+)
+
+axis(
+  2,
+  at = seq_len(nrow(center_matrix)),
+  labels = rev(rownames(center_matrix)),
+  las = 1
+)
+
+box()
+```
+
+
+# Acknowledgement
+
+ChatGPT was used to assist with R code development, debugging, and troubleshooting during the data preprocessing and clustering analysis.
+
+The conversation documenting the use of ChatGPT is available at the following link:
+
+[Prompt](https://chatgpt.com/s/p_6af3411e3c508191949e359ee7ccab47)
+[Output](https://chatgpt.com/s/t_6af33c5d90108191953a09776744ad5f)
